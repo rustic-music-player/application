@@ -2,6 +2,8 @@ extern crate serde;
 #[macro_use]
 extern crate serde_derive;
 extern crate rustic_core as rustic;
+extern crate rustic_memory_store as memory_store;
+extern crate rustic_sqlite_store as sqlite_store;
 extern crate rustic_mpd_frontend as mpd;
 extern crate rustic_http_frontend as http;
 extern crate rustic_qt_frontend as qt;
@@ -23,7 +25,19 @@ pub struct Config {
     mpd: Option<mpd::MpdConfig>,
     http: Option<http::HttpConfig>,
     pocketcasts: Option<rustic::provider::PocketcastsProvider>,
-    soundcloud: Option<rustic::provider::SoundcloudProvider>
+    soundcloud: Option<rustic::provider::SoundcloudProvider>,
+    spotify: Option<rustic::provider::SpotifyProvider>,
+    local: Option<rustic::provider::LocalProvider>,
+    library: Option<LibraryConfig>
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(tag = "store", rename_all = "lowercase")]
+pub enum LibraryConfig {
+    Memory,
+    SQLite {
+        path: String
+    }
 }
 
 fn read_config() -> Config {
@@ -44,23 +58,46 @@ fn main() -> Result<(), Error> {
     if config.soundcloud.is_some() {
         providers.push(Arc::new(RwLock::new(Box::new(config.soundcloud.unwrap()))));
     }
+    if config.spotify.is_some() {
+        providers.push(Arc::new(RwLock::new(Box::new(config.spotify.unwrap()))));
+    }
+    if config.local.is_some() {
+        providers.push(Arc::new(RwLock::new(Box::new(config.local.unwrap()))));
+    }
 
     for provider in &providers {
         let mut provider = provider.write().unwrap();
         provider.setup()?;
     }
 
-    let app = rustic::Rustic::new(providers)?;
+    let store: Box<rustic::Library> = match config.library.unwrap_or(LibraryConfig::Memory) {
+        LibraryConfig::Memory => Box::new(MemoryLibrary::new()),
+        LibraryConfig::SQLite { path } => Box::new(SqliteLibrary::new(path)?)
+    };
+
+    let app = rustic::Rustic::new(store, providers)?;
+
+    let keep_running = Arc::new((Mutex::new(true), Condvar::new()));
+
+    let interrupt = Arc::clone(&keep_running);
 
     let threads = vec![
-        mpd::start(config.mpd.clone(), Arc::clone(&app)),
+        // mpd::start(config.mpd.clone(), Arc::clone(&app)),
         http::start(config.http.clone(), Arc::clone(&app)),
-        rustic::sync::start(Arc::clone(&app)),
-        rustic::player::start(&app),
-        rustic::cache::start(Arc::clone(&app))?
+        rustic::sync::start(Arc::clone(&app), Arc::clone(&keep_running))?,
+        rustic::player::start(&app, Arc::clone(&keep_running))?,
+        rustic::cache::start(Arc::clone(&app), Arc::clone(&keep_running))?
     ];
 
     qt::start(Arc::clone(&app));
+
+    {
+        info!("Shutting down");
+        let &(ref lock, ref cvar) = &*interrupt;
+        let mut running = lock.lock().unwrap();
+        *running = false;
+        cvar.notify_all();
+    }
 
     for handle in threads {
         let _ = handle.join();
