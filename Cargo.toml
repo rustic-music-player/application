@@ -1,7 +1,11 @@
 [package]
 name = "rustic-application"
 version = "0.1.0"
-authors = ["Max Jööhnk <maxjoehnk@gmail.com>"]
+authors = ["Max Jöhnk <maxjoehnk@gmail.com>"]
+license = "GPL-3.0"
+readme = "README.md"
+repository = "https://github.com/rustic-music-player/application"
+homepage = "https://github.com/rustic-music-player/application"
 
 [dependencies]
 env_logger = "0.5"
